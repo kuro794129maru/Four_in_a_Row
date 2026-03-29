@@ -42,6 +42,8 @@ const turnBadgeEl = document.getElementById('turn-badge');
 let board = createEmptyBoard();
 let role = 'spectator';
 let playerNumber = 0;
+let myColor = null;
+let isMyTurn = false;
 let currentTurn = null;
 let currentTurnPlayer = 0;
 let winner = null;
@@ -73,7 +75,11 @@ function canPlay() {
 }
 
 function canHoverColumn() {
-  return canPlay() && currentTurn === socket.id;
+  return canPlay() && isMyTurn;
+}
+
+function syncTurnFromServer() {
+  isMyTurn = role === 'player' && currentTurn === socket.id;
 }
 
 function setStatus(message, tone) {
@@ -88,13 +94,13 @@ function updatePlayerBadge() {
     return;
   }
 
-  if (playerNumber === 1) {
+  if (myColor === 'red') {
     playerBadgeEl.textContent = 'You are Red';
     playerBadgeEl.className = 'badge player-badge player-red';
     return;
   }
 
-  if (playerNumber === 2) {
+  if (myColor === 'yellow') {
     playerBadgeEl.textContent = 'You are Yellow';
     playerBadgeEl.className = 'badge player-badge player-yellow';
     return;
@@ -196,10 +202,9 @@ function updateTurnAndStatus() {
     return;
   }
 
-  const yourTurn = currentTurn === socket.id;
-  turnBadgeEl.textContent = yourTurn ? 'Your turn' : "Opponent's turn";
-  turnBadgeEl.className = `badge turn-badge ${yourTurn ? 'turn-your' : 'turn-opponent'}`;
-  setStatus(yourTurn ? 'Game started. Your turn.' : "Game started. Opponent's turn.", yourTurn ? 'info' : 'neutral');
+  turnBadgeEl.textContent = isMyTurn ? 'Your turn' : "Opponent's turn";
+  turnBadgeEl.className = `badge turn-badge ${isMyTurn ? 'turn-your' : 'turn-opponent'}`;
+  setStatus(isMyTurn ? 'Game started. Your turn.' : "Game started. Opponent's turn.", isMyTurn ? 'info' : 'neutral');
 }
 
 function updateHud() {
@@ -288,7 +293,7 @@ function renderBoard() {
           return;
         }
 
-        if (currentTurn !== socket.id) {
+        if (!isMyTurn) {
           setStatus("Opponent's turn.", 'neutral');
           return;
         }
@@ -381,6 +386,7 @@ socket.on('connect', () => {
 
     role = response.role || (response.playerNumber ? 'player' : 'spectator');
     playerNumber = response.playerNumber || 0;
+    myColor = response.color || (playerNumber === 1 ? 'red' : playerNumber === 2 ? 'yellow' : null);
 
     board = response.state.board;
     currentTurn = response.state.currentTurn;
@@ -394,6 +400,8 @@ socket.on('connect', () => {
     roomMessage = '';
     hasVotedRematch = false;
     lastMove = null;
+    isMyTurn = Boolean(response.isMyTurn);
+    syncTurnFromServer();
 
     renderBoard();
     updateHud();
@@ -426,6 +434,7 @@ socket.on('room update', (payload) => {
   }
 
   roomMessage = payload.message || '';
+  syncTurnFromServer();
 
   renderBoard();
   updateHud();
@@ -436,6 +445,7 @@ socket.on('move made', (payload) => {
   currentTurn = payload.currentTurn;
   currentTurnPlayer = payload.currentTurnPlayer || 0;
   winner = payload.winner;
+  syncTurnFromServer();
 
   lastMove = {
     row: payload.row,
@@ -466,6 +476,7 @@ socket.on('rematch_start', (payload) => {
   currentTurn = payload.currentTurn || null;
   currentTurnPlayer = payload.currentTurnPlayer || 0;
   winner = payload.winner;
+  syncTurnFromServer();
 
   hoveredCol = null;
   lastMove = null;
@@ -478,6 +489,23 @@ socket.on('rematch_start', (payload) => {
   renderBoard();
   updateHud();
   setStatus('Rematch started!', 'success');
+});
+
+socket.on('game_start', (payload) => {
+  if (payload.role) {
+    role = payload.role;
+  }
+
+  if (payload.color) {
+    myColor = payload.color;
+  }
+
+  if (typeof payload.isMyTurn === 'boolean') {
+    isMyTurn = payload.isMyTurn;
+  }
+
+  updateHud();
+  renderBoard();
 });
 
 renderBoard();

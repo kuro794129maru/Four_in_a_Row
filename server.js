@@ -82,24 +82,58 @@ function assignRole(room, socketId) {
 
   if (!room.players[0]) {
     room.players[0] = socketId;
-    if (!room.currentTurn) {
-      room.currentTurn = socketId;
-    }
-
     return { role: 'player', playerNumber: 1 };
   }
 
   if (!room.players[1]) {
     room.players[1] = socketId;
-    if (!room.currentTurn) {
-      room.currentTurn = room.players[0] || socketId;
-    }
-
     return { role: 'player', playerNumber: 2 };
   }
 
   room.spectators.push(socketId);
   return { role: 'spectator', playerNumber: 0 };
+}
+
+function getColorByPlayerNumber(playerNumber) {
+  if (playerNumber === 1) {
+    return 'red';
+  }
+
+  if (playerNumber === 2) {
+    return 'yellow';
+  }
+
+  return null;
+}
+
+function maybeStartGame(roomId, room) {
+  if (getPlayerCount(room) !== 2) {
+    return;
+  }
+
+  if (room.moveCount !== 0 || room.winner !== null) {
+    return;
+  }
+
+  const [p1, p2] = room.players;
+  if (!p1 || !p2) {
+    return;
+  }
+
+  const first = Math.random() < 0.5 ? p1 : p2;
+  room.currentTurn = first;
+
+  io.to(p1).emit('game_start', {
+    role: 'player',
+    color: 'red',
+    isMyTurn: room.currentTurn === p1
+  });
+
+  io.to(p2).emit('game_start', {
+    role: 'player',
+    color: 'yellow',
+    isMyTurn: room.currentTurn === p2
+  });
 }
 
 function dropPiece(board, col, playerToken) {
@@ -174,6 +208,12 @@ io.on('connection', (socket) => {
     const { role, playerNumber } = assignRole(room, socket.id);
 
     socket.join(roomId);
+    if (role === 'player') {
+      maybeStartGame(roomId, room);
+    }
+
+    const color = role === 'player' ? getColorByPlayerNumber(playerNumber) : null;
+    const isMyTurn = role === 'player' && room.currentTurn === socket.id;
 
     if (typeof ack === 'function') {
       ack({
@@ -181,6 +221,8 @@ io.on('connection', (socket) => {
         roomId,
         role,
         playerNumber,
+        color,
+        isMyTurn,
         rows: ROWS,
         cols: COLS,
         state: {
