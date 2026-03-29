@@ -23,55 +23,89 @@ function createEmptyBoard() {
 function getOrCreateRoom(roomId) {
   if (!rooms.has(roomId)) {
     rooms.set(roomId, {
-      board: createEmptyBoard(),
       players: [null, null],
-      currentPlayer: 1,
+      spectators: [],
+      board: createEmptyBoard(),
+      currentTurn: null,
       winner: null,
-      moveCount: 0
+      moveCount: 0,
+      rematchVotes: []
     });
   }
 
   return rooms.get(roomId);
 }
 
-function getPlayerNumber(room, socketId) {
+function getPlayerSeat(room, socketId) {
   if (room.players[0] === socketId) {
-    return 1;
+    return 0;
   }
+
   if (room.players[1] === socketId) {
-    return 2;
-  }
-
-  return null;
-}
-
-function assignPlayerSeat(room, socketId) {
-  const currentSeat = getPlayerNumber(room, socketId);
-  if (currentSeat) {
-    return currentSeat;
-  }
-
-  if (!room.players[0]) {
-    room.players[0] = socketId;
     return 1;
   }
 
-  if (!room.players[1]) {
-    room.players[1] = socketId;
-    return 2;
-  }
-
-  return null;
+  return -1;
 }
 
 function getPlayerCount(room) {
   return room.players.filter(Boolean).length;
 }
 
-function dropPiece(board, col, player) {
+function getSpectatorCount(room) {
+  return room.spectators.length;
+}
+
+function getCurrentTurnPlayer(room) {
+  if (!room.currentTurn) {
+    return 0;
+  }
+
+  const seat = getPlayerSeat(room, room.currentTurn);
+  return seat === -1 ? 0 : seat + 1;
+}
+
+function getNextTurnSocketId(room, seat) {
+  const otherSeat = seat === 0 ? 1 : 0;
+  return room.players[otherSeat] || room.players[seat] || null;
+}
+
+function assignRole(room, socketId) {
+  const existingSeat = getPlayerSeat(room, socketId);
+  if (existingSeat !== -1) {
+    return { role: 'player', playerNumber: existingSeat + 1 };
+  }
+
+  if (room.spectators.includes(socketId)) {
+    return { role: 'spectator', playerNumber: 0 };
+  }
+
+  if (!room.players[0]) {
+    room.players[0] = socketId;
+    if (!room.currentTurn) {
+      room.currentTurn = socketId;
+    }
+
+    return { role: 'player', playerNumber: 1 };
+  }
+
+  if (!room.players[1]) {
+    room.players[1] = socketId;
+    if (!room.currentTurn) {
+      room.currentTurn = room.players[0] || socketId;
+    }
+
+    return { role: 'player', playerNumber: 2 };
+  }
+
+  room.spectators.push(socketId);
+  return { role: 'spectator', playerNumber: 0 };
+}
+
+function dropPiece(board, col, playerToken) {
   for (let row = ROWS - 1; row >= 0; row -= 1) {
     if (board[row][col] === EMPTY) {
-      board[row][col] = player;
+      board[row][col] = playerToken;
       return row;
     }
   }
@@ -79,7 +113,7 @@ function dropPiece(board, col, player) {
   return -1;
 }
 
-function checkWin(board, row, col, player) {
+function checkWin(board, row, col, playerToken) {
   const directions = [
     [0, 1],
     [1, 0],
@@ -92,7 +126,7 @@ function checkWin(board, row, col, player) {
 
     let r = row + dr;
     let c = col + dc;
-    while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === player) {
+    while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === playerToken) {
       count += 1;
       r += dr;
       c += dc;
@@ -100,7 +134,7 @@ function checkWin(board, row, col, player) {
 
     r = row - dr;
     c = col - dc;
-    while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === player) {
+    while (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c] === playerToken) {
       count += 1;
       r -= dr;
       c -= dc;
@@ -114,6 +148,18 @@ function checkWin(board, row, col, player) {
   return false;
 }
 
+function emitRoomUpdate(roomId, room, message = '') {
+  io.to(roomId).emit('room update', {
+    playerCount: getPlayerCount(room),
+    spectatorCount: getSpectatorCount(room),
+    currentTurn: room.currentTurn,
+    currentTurnPlayer: getCurrentTurnPlayer(room),
+    winner: room.winner,
+    rematchVotes: room.rematchVotes.length,
+    message
+  });
+}
+
 io.on('connection', (socket) => {
   socket.on('join room', (rawRoomId, ack) => {
     const roomId = String(rawRoomId || '').trim();
@@ -125,16 +171,7 @@ io.on('connection', (socket) => {
     }
 
     const room = getOrCreateRoom(roomId);
-    const playerNumber = assignPlayerSeat(room, socket.id);
-
-    if (!playerNumber) {
-      if (typeof ack === 'function') {
-        ack({ ok: false, error: 'Room is full. Create a new room.' });
-      }
-
-      socket.emit('full', { roomId });
-      return;
-    }
+    const { role, playerNumber } = assignRole(room, socket.id);
 
     socket.join(roomId);
 
@@ -142,24 +179,25 @@ io.on('connection', (socket) => {
       ack({
         ok: true,
         roomId,
+        role,
         playerNumber,
         rows: ROWS,
         cols: COLS,
         state: {
           board: room.board,
-          currentPlayer: room.currentPlayer,
+          currentTurn: room.currentTurn,
+          currentTurnPlayer: getCurrentTurnPlayer(room),
           winner: room.winner,
           moveCount: room.moveCount,
-          playerCount: getPlayerCount(room)
+          playerCount: getPlayerCount(room),
+          spectatorCount: getSpectatorCount(room),
+          rematchVotes: room.rematchVotes.length
         }
       });
     }
 
-    io.to(roomId).emit('room update', {
-      playerCount: getPlayerCount(room),
-      currentPlayer: room.currentPlayer,
-      winner: room.winner
-    });
+    const joinMessage = role === 'spectator' ? 'A spectator joined.' : `Player ${playerNumber} joined.`;
+    emitRoomUpdate(roomId, room, joinMessage);
   });
 
   socket.on('move', (payload = {}, ack) => {
@@ -174,11 +212,11 @@ io.on('connection', (socket) => {
     }
 
     const room = rooms.get(roomId);
-    const playerNumber = getPlayerNumber(room, socket.id);
+    const seat = getPlayerSeat(room, socket.id);
 
-    if (!playerNumber) {
+    if (seat === -1) {
       if (typeof ack === 'function') {
-        ack({ ok: false, error: 'You are not a player in this room.' });
+        ack({ ok: false, error: 'Spectators cannot make moves.' });
       }
       return;
     }
@@ -197,7 +235,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (room.players[room.currentPlayer - 1] !== socket.id) {
+    if (room.currentTurn !== socket.id) {
       if (typeof ack === 'function') {
         ack({ ok: false, error: 'Not your turn.' });
       }
@@ -211,7 +249,8 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const row = dropPiece(room.board, col, playerNumber);
+    const playerToken = seat + 1;
+    const row = dropPiece(room.board, col, playerToken);
     if (row === -1) {
       if (typeof ack === 'function') {
         ack({ ok: false, error: 'Column is full.' });
@@ -221,55 +260,148 @@ io.on('connection', (socket) => {
 
     room.moveCount += 1;
 
-    if (checkWin(room.board, row, col, playerNumber)) {
-      room.winner = playerNumber;
+    if (checkWin(room.board, row, col, playerToken)) {
+      room.winner = playerToken;
     } else if (room.moveCount === ROWS * COLS) {
       room.winner = 0;
     } else {
-      room.currentPlayer = room.currentPlayer === 1 ? 2 : 1;
+      room.currentTurn = getNextTurnSocketId(room, seat);
     }
 
     const gameState = {
       row,
       col,
-      player: playerNumber,
+      player: playerToken,
       board: room.board,
-      currentPlayer: room.currentPlayer,
+      currentTurn: room.currentTurn,
+      currentTurnPlayer: getCurrentTurnPlayer(room),
       winner: room.winner,
       moveCount: room.moveCount
     };
 
     io.to(roomId).emit('move made', gameState);
+    emitRoomUpdate(roomId, room);
 
     if (typeof ack === 'function') {
       ack({ ok: true, gameState });
     }
   });
 
+  socket.on('rematch_request', (payload = {}, ack) => {
+    const roomId = String(payload.roomId || '').trim();
+
+    if (!rooms.has(roomId)) {
+      if (typeof ack === 'function') {
+        ack({ ok: false, error: 'Room not found.' });
+      }
+      return;
+    }
+
+    const room = rooms.get(roomId);
+    const seat = getPlayerSeat(room, socket.id);
+
+    if (seat === -1) {
+      if (typeof ack === 'function') {
+        ack({ ok: false, error: 'Only players can request rematch.' });
+      }
+      return;
+    }
+
+    if (room.winner === null) {
+      if (typeof ack === 'function') {
+        ack({ ok: false, error: 'Rematch is available after game end.' });
+      }
+      return;
+    }
+
+    if (getPlayerCount(room) < 2) {
+      if (typeof ack === 'function') {
+        ack({ ok: false, error: 'Waiting for opponent to join.' });
+      }
+      return;
+    }
+
+    if (!room.rematchVotes.includes(socket.id)) {
+      room.rematchVotes.push(socket.id);
+    }
+
+    const voters = room.rematchVotes
+      .map((id) => getPlayerSeat(room, id) + 1)
+      .filter((playerNumber) => playerNumber > 0);
+
+    io.to(roomId).emit('rematch_update', {
+      votes: room.rematchVotes.length,
+      needed: 2,
+      voters
+    });
+
+    emitRoomUpdate(roomId, room, 'Rematch vote received.');
+
+    const bothAgreed = room.players[0] && room.players[1]
+      && room.rematchVotes.includes(room.players[0])
+      && room.rematchVotes.includes(room.players[1]);
+
+    if (bothAgreed) {
+      room.board = createEmptyBoard();
+      room.currentTurn = room.players[0] || room.players[1] || null;
+      room.winner = null;
+      room.moveCount = 0;
+      room.rematchVotes = [];
+
+      io.to(roomId).emit('rematch_start', {
+        board: room.board,
+        currentTurn: room.currentTurn,
+        currentTurnPlayer: getCurrentTurnPlayer(room),
+        winner: room.winner,
+        moveCount: room.moveCount
+      });
+
+      emitRoomUpdate(roomId, room, 'Rematch started.');
+
+      if (typeof ack === 'function') {
+        ack({ ok: true, started: true });
+      }
+      return;
+    }
+
+    if (typeof ack === 'function') {
+      ack({ ok: true, started: false, votes: room.rematchVotes.length });
+    }
+  });
+
   socket.on('disconnect', () => {
     for (const [roomId, room] of rooms.entries()) {
-      const leavingPlayer = getPlayerNumber(room, socket.id);
-      if (leavingPlayer === 1) {
-        room.players[0] = null;
-      } else if (leavingPlayer === 2) {
-        room.players[1] = null;
-      }
+      let changed = false;
+      let message = '';
 
-      if (leavingPlayer) {
-        if (room.winner === null && getPlayerCount(room) === 1) {
-          room.currentPlayer = room.players[0] ? 1 : 2;
+      const seat = getPlayerSeat(room, socket.id);
+      if (seat !== -1) {
+        room.players[seat] = null;
+        room.rematchVotes = room.rematchVotes.filter((id) => id !== socket.id);
+
+        if (room.winner === null) {
+          room.currentTurn = room.players[0] || room.players[1] || null;
         }
 
-        io.to(roomId).emit('room update', {
-          playerCount: getPlayerCount(room),
-          currentPlayer: room.currentPlayer,
-          winner: room.winner,
-          message: 'A player disconnected.'
-        });
+        changed = true;
+        message = 'A player disconnected.';
+      }
+
+      const spectatorIdx = room.spectators.indexOf(socket.id);
+      if (spectatorIdx !== -1) {
+        room.spectators.splice(spectatorIdx, 1);
+        changed = true;
+        if (!message) {
+          message = 'A spectator left.';
+        }
+      }
+
+      if (changed) {
+        emitRoomUpdate(roomId, room, message);
       }
 
       const connectedCount = io.sockets.adapter.rooms.get(roomId)?.size || 0;
-      if (getPlayerCount(room) === 0 && connectedCount === 0) {
+      if (getPlayerCount(room) === 0 && getSpectatorCount(room) === 0 && connectedCount === 0) {
         rooms.delete(roomId);
       }
     }

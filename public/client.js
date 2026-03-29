@@ -35,15 +35,21 @@ const boardEl = document.getElementById('board');
 const shareUrlEl = document.getElementById('share-url');
 const createRoomBtn = document.getElementById('create-room');
 const copyUrlBtn = document.getElementById('copy-url');
+const rematchBtn = document.getElementById('rematch-btn');
 const playerBadgeEl = document.getElementById('player-badge');
 const turnBadgeEl = document.getElementById('turn-badge');
 
 let board = createEmptyBoard();
+let role = 'spectator';
 let playerNumber = 0;
-let currentPlayer = 1;
+let currentTurn = null;
+let currentTurnPlayer = 0;
 let winner = null;
 let playerCount = 0;
+let spectatorCount = 0;
+let rematchVotes = 0;
 let roomMessage = '';
+let hasVotedRematch = false;
 
 let hoveredCol = null;
 let lastMove = null;
@@ -63,7 +69,11 @@ function getDropRow(col) {
 }
 
 function canPlay() {
-  return playerNumber > 0 && winner === null && playerCount === 2;
+  return role === 'player' && winner === null && playerCount === 2;
+}
+
+function canHoverColumn() {
+  return canPlay() && currentTurn === socket.id;
 }
 
 function setStatus(message, tone) {
@@ -72,6 +82,12 @@ function setStatus(message, tone) {
 }
 
 function updatePlayerBadge() {
+  if (role === 'spectator') {
+    playerBadgeEl.textContent = 'You are Spectator';
+    playerBadgeEl.className = 'badge player-badge player-spectator';
+    return;
+  }
+
   if (playerNumber === 1) {
     playerBadgeEl.textContent = 'You are Red';
     playerBadgeEl.className = 'badge player-badge player-red';
@@ -84,21 +100,54 @@ function updatePlayerBadge() {
     return;
   }
 
-  playerBadgeEl.textContent = 'Spectator';
+  playerBadgeEl.textContent = 'Connecting...';
   playerBadgeEl.className = 'badge player-badge player-neutral';
+}
+
+function updateRematchButton() {
+  const showRematch = role === 'player' && winner !== null && playerCount === 2;
+
+  rematchBtn.classList.toggle('hidden', !showRematch);
+
+  if (!showRematch) {
+    rematchBtn.disabled = false;
+    rematchBtn.textContent = 'Rematch';
+    return;
+  }
+
+  if (hasVotedRematch && rematchVotes < 2) {
+    rematchBtn.disabled = true;
+    rematchBtn.textContent = 'Waiting...';
+    return;
+  }
+
+  rematchBtn.disabled = false;
+  rematchBtn.textContent = 'Rematch';
 }
 
 function updateTurnAndStatus() {
   if (winner === 1 || winner === 2) {
-    if (playerNumber > 0) {
+    if (role === 'player') {
       const isWinner = winner === playerNumber;
       turnBadgeEl.textContent = isWinner ? 'You win' : 'You lose';
       turnBadgeEl.className = `badge turn-badge ${isWinner ? 'turn-win' : 'turn-lose'}`;
-      setStatus(isWinner ? 'You win!' : 'You lose.', isWinner ? 'success' : 'danger');
+
+      if (hasVotedRematch && rematchVotes < 2) {
+        setStatus('Waiting for opponent to accept rematch...', 'info');
+      } else if (!hasVotedRematch && rematchVotes > 0) {
+        setStatus('Opponent requested a rematch. Click Rematch to accept.', 'info');
+      } else {
+        setStatus(isWinner ? 'You win!' : 'You lose.', isWinner ? 'success' : 'danger');
+      }
+      return;
+    }
+
+    turnBadgeEl.textContent = 'Game ended';
+    turnBadgeEl.className = 'badge turn-badge turn-neutral';
+    if (rematchVotes > 0) {
+      setStatus('Players are voting for a rematch...', 'info');
     } else {
-      turnBadgeEl.textContent = `Player ${winner} won`;
-      turnBadgeEl.className = 'badge turn-badge turn-lose';
-      setStatus(`Player ${winner} wins.`, 'danger');
+      setStatus(`Player ${winner} won.`, 'neutral');
     }
     return;
   }
@@ -106,30 +155,48 @@ function updateTurnAndStatus() {
   if (winner === 0) {
     turnBadgeEl.textContent = 'Draw';
     turnBadgeEl.className = 'badge turn-badge turn-neutral';
-    setStatus('Draw game.', 'neutral');
+
+    if (role === 'player') {
+      if (hasVotedRematch && rematchVotes < 2) {
+        setStatus('Draw game. Waiting for opponent to accept rematch...', 'info');
+      } else if (!hasVotedRematch && rematchVotes > 0) {
+        setStatus('Draw game. Opponent requested rematch.', 'info');
+      } else {
+        setStatus('Draw game.', 'neutral');
+      }
+    } else if (rematchVotes > 0) {
+      setStatus('Draw game. Players are voting for rematch...', 'info');
+    } else {
+      setStatus('Draw game.', 'neutral');
+    }
     return;
   }
 
-  if (playerNumber === 0) {
+  if (role === 'spectator') {
     turnBadgeEl.textContent = 'Spectating';
     turnBadgeEl.className = 'badge turn-badge turn-neutral';
-    setStatus('Room is full. Use Create Room to start another match.', 'warning');
+
+    if (playerCount < 2) {
+      setStatus('Waiting for players to join...', 'warning');
+      return;
+    }
+
+    if (currentTurnPlayer > 0) {
+      setStatus(`You are Spectator. Player ${currentTurnPlayer}'s turn.`, 'info');
+    } else {
+      setStatus('You are Spectator. Watching live game.', 'info');
+    }
     return;
   }
 
   if (playerCount < 2) {
     turnBadgeEl.textContent = 'Waiting';
     turnBadgeEl.className = 'badge turn-badge turn-neutral';
-
-    const waitingMessage = roomMessage
-      ? `${roomMessage} Waiting for opponent...`
-      : 'Waiting for opponent...';
-
-    setStatus(waitingMessage, 'warning');
+    setStatus('Waiting for opponent...', 'warning');
     return;
   }
 
-  const yourTurn = currentPlayer === playerNumber;
+  const yourTurn = currentTurn === socket.id;
   turnBadgeEl.textContent = yourTurn ? 'Your turn' : "Opponent's turn";
   turnBadgeEl.className = `badge turn-badge ${yourTurn ? 'turn-your' : 'turn-opponent'}`;
   setStatus(yourTurn ? 'Game started. Your turn.' : "Game started. Opponent's turn.", yourTurn ? 'info' : 'neutral');
@@ -138,13 +205,16 @@ function updateTurnAndStatus() {
 function updateHud() {
   updatePlayerBadge();
   updateTurnAndStatus();
+  updateRematchButton();
 }
 
 function renderBoard() {
   const interactive = canPlay();
-  const previewRow = interactive && hoveredCol !== null ? getDropRow(hoveredCol) : -1;
+  const allowHover = canHoverColumn();
+  const previewRow = allowHover && hoveredCol !== null ? getDropRow(hoveredCol) : -1;
 
   boardEl.classList.toggle('interactive', interactive);
+  boardEl.classList.toggle('spectator', role === 'spectator');
   boardEl.innerHTML = '';
 
   let animatedInThisRender = false;
@@ -164,21 +234,21 @@ function renderBoard() {
         cell.classList.add('player1');
       } else if (value === 2) {
         cell.classList.add('player2');
-      } else if (interactive && hoveredCol === col && previewRow === row) {
+      } else if (allowHover && hoveredCol === col && previewRow === row) {
         cell.classList.add(playerNumber === 1 ? 'preview-player1' : 'preview-player2');
       }
 
-      if (interactive && hoveredCol === col) {
+      if (allowHover && hoveredCol === col) {
         cell.classList.add('column-hover');
       }
 
       if (
-        !animatedInThisRender &&
-        lastMove &&
-        lastMove.id !== animatedMoveId &&
-        lastMove.row === row &&
-        lastMove.col === col &&
-        value === lastMove.player
+        !animatedInThisRender
+        && lastMove
+        && lastMove.id !== animatedMoveId
+        && lastMove.row === row
+        && lastMove.col === col
+        && value === lastMove.player
       ) {
         cell.classList.add('drop');
         cell.style.setProperty('--drop-distance', `${(row + 1) * 68}px`);
@@ -186,7 +256,7 @@ function renderBoard() {
       }
 
       cell.addEventListener('mouseenter', () => {
-        if (!interactive || hoveredCol === col) {
+        if (!allowHover || hoveredCol === col) {
           return;
         }
 
@@ -195,7 +265,7 @@ function renderBoard() {
       });
 
       cell.addEventListener('focus', () => {
-        if (!interactive || hoveredCol === col) {
+        if (!allowHover || hoveredCol === col) {
           return;
         }
 
@@ -204,12 +274,12 @@ function renderBoard() {
       });
 
       cell.addEventListener('click', () => {
-        if (winner !== null) {
+        if (role === 'spectator') {
+          setStatus('You are Spectator. Watching only.', 'warning');
           return;
         }
 
-        if (playerNumber === 0) {
-          setStatus('Room is full. Use Create Room to start another match.', 'warning');
+        if (winner !== null) {
           return;
         }
 
@@ -218,7 +288,7 @@ function renderBoard() {
           return;
         }
 
-        if (currentPlayer !== playerNumber) {
+        if (currentTurn !== socket.id) {
           setStatus("Opponent's turn.", 'neutral');
           return;
         }
@@ -228,8 +298,6 @@ function renderBoard() {
           setStatus('This column is full. Choose another column.', 'warning');
           return;
         }
-
-        roomMessage = '';
 
         socket.emit('move', { roomId, col }, (response) => {
           if (!response || response.ok) {
@@ -282,6 +350,26 @@ copyUrlBtn.addEventListener('click', async () => {
   }
 });
 
+rematchBtn.addEventListener('click', () => {
+  if (role !== 'player' || winner === null) {
+    return;
+  }
+
+  socket.emit('rematch_request', { roomId }, (response) => {
+    if (!response || !response.ok) {
+      setStatus(response?.error || 'Rematch request failed.', 'danger');
+      return;
+    }
+
+    hasVotedRematch = true;
+    if (typeof response.votes === 'number') {
+      rematchVotes = response.votes;
+    }
+
+    updateHud();
+  });
+});
+
 const socket = io();
 
 socket.on('connect', () => {
@@ -291,14 +379,20 @@ socket.on('connect', () => {
       return;
     }
 
-    playerNumber = response.playerNumber;
+    role = response.role || (response.playerNumber ? 'player' : 'spectator');
+    playerNumber = response.playerNumber || 0;
+
     board = response.state.board;
-    currentPlayer = response.state.currentPlayer;
+    currentTurn = response.state.currentTurn;
+    currentTurnPlayer = response.state.currentTurnPlayer || 0;
     winner = response.state.winner;
-    playerCount = response.state.playerCount;
+    playerCount = response.state.playerCount || 0;
+    spectatorCount = response.state.spectatorCount || 0;
+    rematchVotes = response.state.rematchVotes || 0;
 
     hoveredCol = null;
     roomMessage = '';
+    hasVotedRematch = false;
     lastMove = null;
 
     renderBoard();
@@ -311,12 +405,24 @@ socket.on('room update', (payload) => {
     playerCount = payload.playerCount;
   }
 
-  if (typeof payload.currentPlayer === 'number') {
-    currentPlayer = payload.currentPlayer;
+  if (typeof payload.spectatorCount === 'number') {
+    spectatorCount = payload.spectatorCount;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'currentTurn')) {
+    currentTurn = payload.currentTurn;
+  }
+
+  if (typeof payload.currentTurnPlayer === 'number') {
+    currentTurnPlayer = payload.currentTurnPlayer;
   }
 
   if (Object.prototype.hasOwnProperty.call(payload, 'winner')) {
     winner = payload.winner;
+  }
+
+  if (typeof payload.rematchVotes === 'number') {
+    rematchVotes = payload.rematchVotes;
   }
 
   roomMessage = payload.message || '';
@@ -327,7 +433,8 @@ socket.on('room update', (payload) => {
 
 socket.on('move made', (payload) => {
   board = payload.board;
-  currentPlayer = payload.currentPlayer;
+  currentTurn = payload.currentTurn;
+  currentTurnPlayer = payload.currentTurnPlayer || 0;
   winner = payload.winner;
 
   lastMove = {
@@ -344,10 +451,33 @@ socket.on('move made', (payload) => {
   updateHud();
 });
 
-socket.on('full', () => {
-  playerNumber = 0;
+socket.on('rematch_update', (payload) => {
+  rematchVotes = payload.votes || 0;
+
+  if (role === 'player' && Array.isArray(payload.voters)) {
+    hasVotedRematch = payload.voters.includes(playerNumber);
+  }
+
   updateHud();
+});
+
+socket.on('rematch_start', (payload) => {
+  board = payload.board || createEmptyBoard();
+  currentTurn = payload.currentTurn || null;
+  currentTurnPlayer = payload.currentTurnPlayer || 0;
+  winner = payload.winner;
+
+  hoveredCol = null;
+  lastMove = null;
+  animatedMoveId = null;
+
+  rematchVotes = 0;
+  hasVotedRematch = false;
+  roomMessage = 'Rematch started.';
+
   renderBoard();
+  updateHud();
+  setStatus('Rematch started!', 'success');
 });
 
 renderBoard();
