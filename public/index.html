@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Connect Four - Realtime Rooms</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="game-card">
+        <header class="header">
+          <h1>Connect Four</h1>
+          <p class="subtitle">Share the room URL and play in real time.</p>
+        </header>
+
+        <section class="room-tools" aria-label="Room controls">
+          <button id="create-room" class="btn btn-primary" type="button">Create Room</button>
+
+          <div class="share-box">
+            <label for="share-url">Share Room URL</label>
+            <div class="share-row">
+              <input id="share-url" type="text" readonly />
+              <button id="copy-url" class="btn btn-secondary" type="button">Copy URL</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="game-info" aria-live="polite">
+          <p class="room-text">Room ID: <strong id="room-id"></strong></p>
+
+          <div class="badges">
+            <span id="player-badge" class="badge player-badge player-neutral">Connecting...</span>
+            <span id="turn-badge" class="badge turn-badge turn-neutral">Waiting</span>
+          </div>
+
+          <p id="status" class="status status-neutral">Connecting...</p>
+        </section>
+
+        <section class="board-wrapper" aria-label="Game board section">
+          <section id="board" class="board" aria-label="Connect Four board"></section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js"></script>
+  </body>
+</html>
