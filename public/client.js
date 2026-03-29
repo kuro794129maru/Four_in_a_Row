@@ -294,6 +294,13 @@ function renderBoard() {
         }
 
         if (!isMyTurn) {
+          console.log('[DEBUG] Click blocked (not your turn):', {
+            role,
+            isMyTurn,
+            currentTurn,
+            currentTurnPlayer,
+            socketId: socket.id
+          });
           setStatus("Opponent's turn.", 'neutral');
           return;
         }
@@ -435,6 +442,14 @@ socket.on('room update', (payload) => {
 
   roomMessage = payload.message || '';
   syncTurnFromServer();
+  console.log('[DEBUG] room update sync:', {
+    role,
+    currentTurn,
+    currentTurnPlayer,
+    isMyTurn,
+    winner,
+    rematchVotes
+  });
 
   renderBoard();
   updateHud();
@@ -472,6 +487,8 @@ socket.on('rematch_update', (payload) => {
 });
 
 socket.on('rematch_start', (payload) => {
+  console.log('[DEBUG] rematch_start received:', payload);
+
   board = payload.board || createEmptyBoard();
   currentTurn = payload.currentTurn || null;
   currentTurnPlayer = payload.currentTurnPlayer || 0;
@@ -492,6 +509,8 @@ socket.on('rematch_start', (payload) => {
 });
 
 socket.on('game_start', (payload) => {
+  console.log('[DEBUG] Game start received:', payload);
+
   if (payload.role) {
     role = payload.role;
   }
@@ -503,6 +522,10 @@ socket.on('game_start', (payload) => {
   if (typeof payload.isMyTurn === 'boolean') {
     isMyTurn = payload.isMyTurn;
   }
+
+  console.log('[DEBUG] game_start role:', role);
+  console.log('[DEBUG] game_start color:', myColor);
+  console.log('[DEBUG] game_start isMyTurn:', isMyTurn);
 
   updateHud();
   renderBoard();

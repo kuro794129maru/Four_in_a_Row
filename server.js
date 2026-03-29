@@ -15,6 +15,11 @@ const EMPTY = 0;
 app.use(express.static(path.join(__dirname, 'public')));
 
 const rooms = new Map();
+const debugStartStats = {
+  total: 0,
+  p1First: 0,
+  p2First: 0
+};
 
 function createEmptyBoard() {
   return Array.from({ length: ROWS }, () => Array(COLS).fill(EMPTY));
@@ -120,20 +125,43 @@ function maybeStartGame(roomId, room) {
     return;
   }
 
-  const first = Math.random() < 0.5 ? p1 : p2;
-  room.currentTurn = first;
+  const rand = Math.random();
+  console.log(`[DEBUG][${roomId}] Random value:`, rand);
 
-  io.to(p1).emit('game_start', {
+  const first = rand < 0.5 ? p1 : p2;
+  console.log(`[DEBUG][${roomId}] Player1:`, p1);
+  console.log(`[DEBUG][${roomId}] Player2:`, p2);
+  console.log(`[DEBUG][${roomId}] First player:`, first);
+
+  debugStartStats.total += 1;
+  if (first === p1) {
+    debugStartStats.p1First += 1;
+  } else {
+    debugStartStats.p2First += 1;
+  }
+  console.log(
+    `[DEBUG][${roomId}] First-player stats => total:${debugStartStats.total}, p1:${debugStartStats.p1First}, p2:${debugStartStats.p2First}`
+  );
+
+  room.currentTurn = first;
+  console.log(`[DEBUG][${roomId}] Current turn set to:`, room.currentTurn);
+
+  const p1Payload = {
     role: 'player',
     color: 'red',
     isMyTurn: room.currentTurn === p1
-  });
-
-  io.to(p2).emit('game_start', {
+  };
+  const p2Payload = {
     role: 'player',
     color: 'yellow',
     isMyTurn: room.currentTurn === p2
-  });
+  };
+
+  console.log(`[DEBUG][${roomId}] Sending to p1:`, p1Payload);
+  console.log(`[DEBUG][${roomId}] Sending to p2:`, p2Payload);
+
+  io.to(p1).emit('game_start', p1Payload);
+  io.to(p2).emit('game_start', p2Payload);
 }
 
 function dropPiece(board, col, playerToken) {
@@ -308,6 +336,7 @@ io.on('connection', (socket) => {
       room.winner = 0;
     } else {
       room.currentTurn = getNextTurnSocketId(room, seat);
+      console.log(`[DEBUG][${roomId}] currentTurn updated after move:`, room.currentTurn);
     }
 
     const gameState = {
@@ -386,6 +415,7 @@ io.on('connection', (socket) => {
     if (bothAgreed) {
       room.board = createEmptyBoard();
       room.currentTurn = room.players[0] || room.players[1] || null;
+      console.log(`[DEBUG][${roomId}] currentTurn set on rematch_start:`, room.currentTurn);
       room.winner = null;
       room.moveCount = 0;
       room.rematchVotes = [];
@@ -423,6 +453,7 @@ io.on('connection', (socket) => {
 
         if (room.winner === null) {
           room.currentTurn = room.players[0] || room.players[1] || null;
+          console.log(`[DEBUG][${roomId}] currentTurn adjusted on disconnect:`, room.currentTurn);
         }
 
         changed = true;
